@@ -615,7 +615,7 @@ class BatchNormalizationBase(Layer):
     train_op = _fused_batch_norm_training
     if use_fused_avg_updates and input_batch_size is not None:
       # pylint: disable=g-long-lambda
-      train_op = lambda: control_flow_util.smart_cond(
+      train_op = lambda: tf.cond(
           input_batch_size > 0, _fused_batch_norm_training,
           _fused_batch_norm_training_empty)
       # pylint: enable=g-long-lambda
