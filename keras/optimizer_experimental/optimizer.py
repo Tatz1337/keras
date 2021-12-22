@@ -486,13 +486,143 @@ class Optimizer(_BaseOptimizer):
       overwrite the model variable by its stored moving average. If None, we
       do not overwrite model variables in the middle of training, and users
       need to explicitly overwrite the model variable by calling
-      `finalize_variable_update()`.
+      `finalize_variable_values()`.
     jit_compile: bool, default to False. If True, the optimizer will use XLA
       acceleration. `jit_compile` can only be False when using Parameter
       Server Strategy.
     **kwargs: keyword arguments only used for backward compatibility with
       `optimizer_v2.OptimizerV2`. Any new code using
       `optimizer_experimental.Optimizer` should leave this parameter empty.
+
+  ### Usage
+
+  ```python
+  # Create an optimizer with the desired parameters.
+  opt = tf.keras.optimizers.experimental.SGD(learning_rate=0.1)
+  var1, var2 = tf.Variable(1.0), tf.Variable(2.0)
+  # `loss` is a callable that takes no argument and returns the value
+  # to minimize.
+  loss = lambda: 3 * var1 * var1 + 2 * var2 * var2
+  # Call minimize to update the list of variables.
+  opt.minimize(loss, var_list=[var1, var2])
+  ```
+
+  ### Processing gradients before applying them
+
+  Calling `minimize()` takes care of both computing the gradients and
+  applying them to the variables.  If you want to process the gradients
+  before applying them you can instead use the optimizer in three steps:
+
+  1.  Compute the gradients with `tf.GradientTape`.
+  2.  Process the gradients as you wish.
+  3.  Apply the processed gradients with `apply_gradients()`.
+
+  Example:
+
+  ```python
+  # Create an optimizer.
+  opt = tf.keras.optimizers.experimental.SGD(learning_rate=0.1)
+  var1, var2 = tf.Variable(1.0), tf.Variable(2.0)
+
+  # Compute the gradients for a list of variables.
+  with tf.GradientTape() as tape:
+    loss = 3 * var1 * var1 + 2 * var2 * var2
+  grads = tape.gradient(loss, [var1, var2])
+
+  # Process the gradients.
+  grads[0] = grads[0] + 1
+
+  # Ask the optimizer to apply the gradients on variables.
+  opt.apply_gradients(zip(grads, [var1, var2]))
+  ```
+
+  ### Dynamic learning rate
+
+  Dynamic learning rate can be achieved by setting learning rate as a built-in
+  or customized `tf.keras.optimizers.schedules.LearningRateSchedule`.
+
+  Example:
+
+  >>> var = tf.Variable(np.random.random(size=(1,)))
+  >>> learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+  ... initial_learning_rate=.01, decay_steps=20, decay_rate=.1)
+  >>> opt = tf.keras.optimizers.experimental.SGD(learning_rate=learning_rate)
+  >>> loss = lambda: 3 * var
+  >>> opt.minimize(loss, var_list=[var])
+  <tf.Variable...
+
+  ### Gradients clipping
+
+  Users can clip the gradients before applying to variables by setting
+  `clipnorm`, `clipvalue` and `global_clipnorm`. Notice that `clipnorm` and
+  `global_clipnorm` can only have one being set.
+
+  Example:
+
+  ```python
+  opt = tf.keras.optimizers.experimental.SGD(learning_rate=1, clipvalue=1)
+  var1, var2 = tf.Variable(2.0), tf.Variable(2.0)
+  with tf.GradientTape() as tape:
+    loss = 2 * var1 + 2 * var2
+  grads = tape.gradient(loss, [var1, var2])
+  # grads for var1 and var2 are [2, 2]
+  print(grads)
+  opt.apply_gradients(zip(grads, [var1, var2]))
+  # Without clipping, we should get [0, 0], but as gradients are clipped to
+  # have max value 1, we get [1.0, 1.0].
+  print([var1, var2])
+  ```
+
+  ### Use exponential moving average.
+
+  Empirically it has been found that using the exponential moving average (EMA)
+  of the trained parameters of a deep network is better than using its trained
+  parameters directly. Keras optimizer allows users to compute this moving
+  average and overwrite the model variables at desired time.
+
+  Example:
+
+  ```python
+  # Create a SGD optimizer with EMA on. `ema_momentum` controls the decay rate
+  # of the moving average. `ema_momentum=1` means no decay and the stored moving
+  # average is always the variable's initial value. `ema_overwrite_frequency=3`
+  # means every 3 iterations, we overwrite the trainable variables with their
+  # moving average values.
+  opt = tf.keras.optimizers.experimental.SGD(
+      learning_rate=1,
+      use_ema=True,
+      ema_momentum=0.5,
+      ema_overwrite_frequency=3)
+  var1, var2 = tf.Variable(2.0), tf.Variable(2.0)
+  with tf.GradientTape() as tape:
+    loss = var1 + var2
+  grads = tape.gradient(loss, [var1, var2])
+  # First iteration: [var1, var2] = [1.0, 1.0]
+  opt.apply_gradients(zip(grads, [var1, var2]))
+  print([var1, var2])
+
+  # Second iteration: [var1, var2] = [0.0, 0.0]
+  opt.apply_gradients(zip(grads, [var1, var2]))
+  print([var1, var2])
+
+  # Third iteration, without EMA, we should see [var1, var2] = [-1.0, -1.0],
+  # but overwriting results in [var1, var2] = [-0.125, -0.125].
+  opt.apply_gradients(zip(grads, [var1, var2]))
+  print([var1, var2])
+
+  ```
+  When optimizer is constructed with `use_ema=True`, users can also explicitly
+  call `finalize_variable_values()` to overwrite trainable variables with their
+  EMA values. `finalize_variable_values()` is automatically called at the end of
+  `model.fit()`
+
+  ### Use with `tf.distribute.Strategy`
+
+  This optimizer class is `tf.distribute.Strategy` aware, which means it
+  automatically sums gradients across all replicas. To aggregate gradients
+  yourself, call `apply_gradients` with `skip_aggregate_gradients` set to True.
+  This is useful if you need to process aggregated gradients.
+
   """
 
   def __init__(self,
